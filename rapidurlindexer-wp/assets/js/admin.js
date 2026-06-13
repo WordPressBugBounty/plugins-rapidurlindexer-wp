@@ -1,5 +1,32 @@
 (function($) {
     $(document).ready(function() {
+        function renderNotice(type, messages) {
+            var notice = $('<div>').addClass('notice notice-' + type);
+            var paragraph = $('<p>');
+
+            $.each(messages, function(index, message) {
+                if (index > 0) {
+                    paragraph.append($('<br>'));
+                }
+                paragraph.append(document.createTextNode(message));
+            });
+
+            notice.append(paragraph);
+            $('#rui-bulk-submit-response').empty().append(notice);
+        }
+
+        function normalizeErrorMessage(responseData) {
+            if (typeof responseData === 'string') {
+                return responseData;
+            }
+
+            if (responseData && typeof responseData.error === 'string') {
+                return responseData.error;
+            }
+
+            return rui_ajax.unknown_error;
+        }
+
         function fetchCredits() {
             $.ajax({
                 url: rui_ajax.ajax_url,
@@ -31,7 +58,7 @@
             var submitButton = $('#rapidurlindexer-submit-urls');
             var originalSubmitValue = submitButton.val();
             submitButton.prop('disabled', true).val('Submitting...');
-            $('#rui-bulk-submit-response').html('<div class="notice notice-info"><p>Submitting URLs...</p></div>');
+            renderNotice('info', [rui_ajax.submitting_urls]);
 
             var formData = new FormData(this);
             formData.append('action', 'rapidurlindexer_bulk_submit');
@@ -45,29 +72,21 @@
                 contentType: false,
                 success: function(response) {
                     if (response.success) {
-                        $('#rui-bulk-submit-response').html(
-                            '<div class="notice notice-success"><p>' + 
-                            response.data.message + 
-                            '<br>Remaining credits: ' + response.data.credits + 
-                            '</p></div>'
-                        );
+                        renderNotice('success', [
+                            response.data.message,
+                            rui_ajax.remaining_credits + ' ' + response.data.credits
+                        ]);
                         // Clear the form
                         $('#rui-urls').val('');
                         $('#rui-project-name').val('');
                     } else {
-                        $('#rui-bulk-submit-response').html(
-                            '<div class="notice notice-error"><p>Error: ' + 
-                            (response.data || 'Unknown error occurred') + 
-                            '</p></div>'
-                        );
+                        renderNotice('error', [
+                            rui_ajax.error_prefix + ' ' + normalizeErrorMessage(response.data)
+                        ]);
                     }
                 },
                 error: function(xhr, status, error) {
-                    $('#rui-bulk-submit-response').html(
-                        '<div class="notice notice-error"><p>Error: ' + 
-                        error + 
-                        '</p></div>'
-                    );
+                    renderNotice('error', [rui_ajax.error_prefix + ' ' + error]);
                 },
                 complete: function() {
                     // Reset button state
@@ -97,8 +116,4 @@
             }
         });
     });
-
-    function updateCreditsDisplay(credits) {
-        $('.rui-credits-display').text(credits);
-    }
 })(jQuery);

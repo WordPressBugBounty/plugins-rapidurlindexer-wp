@@ -2,9 +2,9 @@
 Contributors: rapidurlindexer
 Tags: indexer, index, google, website indexer, seo
 Requires at least: 4.7
-Tested up to: 6.9
-Stable tag: 1.1.3
-Requires PHP: 7.2
+Tested up to: 7.0
+Stable tag: 1.1.7
+Requires PHP: 7.4
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.en.html
 Text Domain: rapidurlindexer-wp
@@ -111,6 +111,23 @@ Yes, Rapid URL Indexer provides a RESTful API for easy integration with your own
 This plugin sends the URLs of your posts and pages to the Rapid URL Indexer service for indexing. No personal data is sent other than the URLs themselves. Please review the Rapid URL Indexer Privacy Policy for more information on how they handle data.
 
 == Changelog ==
+
+= 1.1.7 =
+* feat: Add automated WordPress.org deployment on synchronized version bumps.
+* chore: Add clean release package validation to prevent development files from being published.
+
+= 1.1.6 =
+* feat: Add an optional rolling 24-hour maximum URL submission limit with queued overflow.
+* feat: Show queued URL submissions in settings when the limit is enabled.
+
+= 1.1.5 =
+* fix: Keep per-post auto-submit setting persistence available outside admin-only requests.
+* fix: Prevent duplicate automatic submission log entries and add category-create nonce output.
+* chore: Confirm WordPress 7.0 compatibility metadata.
+
+= 1.1.4 =
+* fix: Ensure automatic submissions run for REST/block-editor publishes and classify first publish by status transition.
+* fix: Save per-post auto-submit settings from the post editor meta box.
 
 = 1.1.3 =
 * feat: Add Apex Mode setting (global) with Bulk Submit override
