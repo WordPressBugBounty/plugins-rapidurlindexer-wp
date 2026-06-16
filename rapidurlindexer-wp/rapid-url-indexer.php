@@ -7,7 +7,7 @@ if (!defined('ABSPATH')) {
 /**
  * Plugin Name: Rapid URL Indexer for WP
  * Description: Submit URLs to Rapid URL Indexer for fast and reliable Google indexing. Uses the Rapid URL Indexer API service.
- * Version: 1.1.7
+ * Version: 1.1.8
  * Requires at least: 4.7
  * Tested up to: 7.0
  * Requires PHP: 7.4
@@ -28,7 +28,7 @@ if (!defined('ABSPATH')) {
 }
 
 if (!defined('RUI_PLUGIN_VERSION')) {
-    define('RUI_PLUGIN_VERSION', '1.1.7');
+    define('RUI_PLUGIN_VERSION', '1.1.8');
 }
 
 if (!class_exists('RUI_WordPress_Plugin')) {
@@ -37,12 +37,18 @@ if (!class_exists('RUI_WordPress_Plugin')) {
         private const APEX_CREDITS_PER_URL = 3;
         private const SUBMISSION_WINDOW_SECONDS = 86400;
         private const SUBMISSION_LOCK_TTL = 300;
+        private $auto_submitted_posts = array();
+        private $publish_transition_states = array();
+        private $rest_auto_submit_hooks_registered = false;
+        private $registered_rest_auto_submit_post_types = array();
 
         public function __construct() {
             add_action('plugins_loaded', array($this, 'load_plugin_textdomain'));
 
             // Automatic submissions and their per-post settings must run for every
             // WordPress execution context, including REST, XML-RPC, cron, and CLI.
+            add_action('rest_api_init', array($this, 'register_rest_auto_submit_hooks'), 100);
+            add_action('registered_post_type', array($this, 'register_rest_auto_submit_hook_for_post_type'), 10, 2);
             add_action('transition_post_status', array($this, 'on_post_status_change'), 10, 3);
             add_action('save_post', array($this, 'save_post_meta'), 10, 2);
             add_action('rui_process_submission_queue', array($this, 'process_submission_queue'));
@@ -52,12 +58,9 @@ if (!class_exists('RUI_WordPress_Plugin')) {
             if (is_admin()) {
                 add_action('admin_menu', array($this, 'add_plugin_page'));
                 add_action('admin_init', array($this, 'page_init'), 1);
+                add_action('admin_init', array($this, 'register_taxonomy_meta_hooks'));
                 add_action('add_meta_boxes', array($this, 'add_meta_boxes'));
                 add_action('admin_enqueue_scripts', array($this, 'enqueue_scripts'));
-                add_action('category_add_form_fields', array($this, 'add_category_meta_fields'));
-                add_action('category_edit_form_fields', array($this, 'edit_category_meta_fields'));
-                add_action('edited_category', array($this, 'save_category_meta'), 10, 2);
-                add_action('create_category', array($this, 'save_category_meta'), 10, 2);
                 add_action('wp_ajax_rapidurlindexer_bulk_submit', array($this, 'rapidurlindexer_handle_bulk_submit'));
                 add_action('wp_ajax_rui_clear_logs', array($this, 'clear_logs'));
                 add_action('wp_ajax_rui_refresh_credits', array($this, 'handle_refresh_credits'));
@@ -112,6 +115,80 @@ if (!class_exists('RUI_WordPress_Plugin')) {
 
     private function is_submission_limit_enabled() {
         return $this->get_max_submissions_per_24h() > 0;
+    }
+
+    private function is_auto_submit_post_type($post_type) {
+        $post_type_object = is_object($post_type) ? $post_type : get_post_type_object($post_type);
+        if (!$post_type_object || empty($post_type_object->name)) {
+            return false;
+        }
+
+        $excluded_post_types = array(
+            'attachment',
+            'revision',
+            'nav_menu_item',
+            'custom_css',
+            'customize_changeset',
+            'oembed_cache',
+            'user_request',
+            'wp_block',
+            'wp_template',
+            'wp_template_part',
+            'wp_global_styles',
+            'wp_navigation',
+            'wp_font_family',
+            'wp_font_face',
+        );
+
+        if (in_array($post_type_object->name, $excluded_post_types, true)) {
+            return false;
+        }
+
+        return !empty($post_type_object->public) || !empty($post_type_object->publicly_queryable);
+    }
+
+    private function get_auto_submit_post_types($output = 'names') {
+        $post_types = get_post_types(array(), 'objects');
+        $eligible_post_types = array();
+
+        foreach ($post_types as $post_type) {
+            if (!$this->is_auto_submit_post_type($post_type)) {
+                continue;
+            }
+
+            $eligible_post_types[$post_type->name] = $post_type;
+        }
+
+        if ('objects' === $output) {
+            return $eligible_post_types;
+        }
+
+        return array_keys($eligible_post_types);
+    }
+
+    public function register_rest_auto_submit_hooks() {
+        if ($this->rest_auto_submit_hooks_registered) {
+            return;
+        }
+
+        $this->rest_auto_submit_hooks_registered = true;
+        foreach ($this->get_auto_submit_post_types('names') as $post_type) {
+            $this->register_rest_auto_submit_hook_for_post_type($post_type);
+        }
+    }
+
+    public function register_rest_auto_submit_hook_for_post_type($post_type, $post_type_object = null) {
+        $post_type_object = $post_type_object ? $post_type_object : get_post_type_object($post_type);
+        if (!$this->is_auto_submit_post_type($post_type_object)) {
+            return;
+        }
+
+        if (isset($this->registered_rest_auto_submit_post_types[$post_type])) {
+            return;
+        }
+
+        $this->registered_rest_auto_submit_post_types[$post_type] = true;
+        add_action('rest_after_insert_' . $post_type, array($this, 'on_rest_after_insert_post'), 10, 3);
     }
 
     private function get_submission_history($now = null) {
@@ -365,6 +442,58 @@ if (!class_exists('RUI_WordPress_Plugin')) {
         dbDelta($sql);
     }
 
+    public function register_taxonomy_meta_hooks() {
+        foreach ($this->get_admin_auto_submit_taxonomies() as $taxonomy) {
+            add_action($taxonomy . '_add_form_fields', array($this, 'add_category_meta_fields'));
+            add_action($taxonomy . '_edit_form_fields', array($this, 'edit_category_meta_fields'));
+            add_action('created_' . $taxonomy, array($this, 'save_category_meta'), 10, 2);
+            add_action('edited_' . $taxonomy, array($this, 'save_category_meta'), 10, 2);
+        }
+    }
+
+    private function get_admin_auto_submit_taxonomies() {
+        $taxonomies = get_taxonomies(array(), 'objects');
+        $eligible_taxonomies = array();
+
+        foreach ($taxonomies as $taxonomy) {
+            if (empty($taxonomy->name) || empty($taxonomy->object_type)) {
+                continue;
+            }
+
+            if (empty($taxonomy->show_ui) && empty($taxonomy->public)) {
+                continue;
+            }
+
+            if ($this->taxonomy_has_auto_submit_post_type($taxonomy->object_type)) {
+                $eligible_taxonomies[] = $taxonomy->name;
+            }
+        }
+
+        return $eligible_taxonomies;
+    }
+
+    private function taxonomy_has_auto_submit_post_type($object_types) {
+        foreach ((array) $object_types as $post_type) {
+            $post_type_object = get_post_type_object($post_type);
+            if ($post_type_object && (!empty($post_type_object->public) || !empty($post_type_object->publicly_queryable))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function get_taxonomy_from_current_term_hook() {
+        $hook = current_filter();
+        foreach (array('created_', 'edited_') as $prefix) {
+            if (0 === strpos($hook, $prefix)) {
+                return sanitize_key(substr($hook, strlen($prefix)));
+            }
+        }
+
+        return '';
+    }
+
     public function add_category_meta_fields($taxonomy) {
         ?>
         <?php wp_nonce_field('rui_save_category_meta', 'rui_category_nonce'); ?>
@@ -405,7 +534,11 @@ if (!class_exists('RUI_WordPress_Plugin')) {
             return;
         }
 
-        if (!current_user_can('manage_categories')) {
+        $taxonomy = $this->get_taxonomy_from_current_term_hook();
+        $taxonomy_object = $taxonomy ? get_taxonomy($taxonomy) : null;
+        $manage_terms_capability = ($taxonomy_object && !empty($taxonomy_object->cap->manage_terms)) ? $taxonomy_object->cap->manage_terms : 'manage_categories';
+
+        if (!current_user_can($manage_terms_capability)) {
             wp_die(esc_html__('Insufficient permissions', 'rapidurlindexer-wp'));
             return;
         }
@@ -415,6 +548,57 @@ if (!class_exists('RUI_WordPress_Plugin')) {
 
         update_term_meta($term_id, '_rui_submit_on_publish', $submit_on_publish);
         update_term_meta($term_id, '_rui_submit_on_update', $submit_on_update);
+    }
+
+    private function get_assigned_term_auto_submit_settings($post_id, $post_type) {
+        $term_settings = array(
+            'submit_on_publish' => false,
+            'submit_on_update' => false,
+        );
+
+        $taxonomies = get_object_taxonomies($post_type, 'names');
+        if (empty($taxonomies)) {
+            return $term_settings;
+        }
+
+        $term_ids = wp_get_object_terms($post_id, $taxonomies, array('fields' => 'ids'));
+        if (is_wp_error($term_ids) || empty($term_ids)) {
+            return $term_settings;
+        }
+
+        foreach ($term_ids as $term_id) {
+            if (get_term_meta($term_id, '_rui_submit_on_publish', true)) {
+                $term_settings['submit_on_publish'] = true;
+            }
+
+            if (get_term_meta($term_id, '_rui_submit_on_update', true)) {
+                $term_settings['submit_on_update'] = true;
+            }
+
+            if ($term_settings['submit_on_publish'] && $term_settings['submit_on_update']) {
+                break;
+            }
+        }
+
+        return $term_settings;
+    }
+
+    public function on_rest_after_insert_post($post, $request, $creating) {
+        if (!$post instanceof WP_Post || !$request instanceof WP_REST_Request) {
+            return;
+        }
+
+        if ('publish' !== $post->post_status) {
+            return;
+        }
+
+        if (isset($this->publish_transition_states[$post->ID])) {
+            $is_new_post = (bool) $this->publish_transition_states[$post->ID];
+        } else {
+            $is_new_post = $creating || 'publish' === $request->get_param('status');
+        }
+
+        $this->maybe_auto_submit_post($post, $is_new_post);
     }
 
     // Save per-post automatic submission settings from the post editor meta box.
@@ -445,11 +629,34 @@ if (!class_exists('RUI_WordPress_Plugin')) {
             return;
         }
 
-        if ('publish' !== $new_status || post_password_required($post)) {
+        if ('publish' !== $new_status) {
+            return;
+        }
+
+        $is_new_post = 'publish' !== $old_status;
+        $this->publish_transition_states[$post->ID] = $is_new_post;
+        if (defined('REST_REQUEST') && REST_REQUEST) {
+            return;
+        }
+
+        $this->maybe_auto_submit_post($post, $is_new_post);
+    }
+
+    private function maybe_auto_submit_post($post, $is_new_post) {
+        if (!$post instanceof WP_Post) {
+            return;
+        }
+
+        if ('publish' !== $post->post_status || post_password_required($post)) {
             return;
         }
 
         if (wp_is_post_revision($post->ID) || wp_is_post_autosave($post->ID)) {
+            return;
+        }
+
+        $submission_guard_key = $post->ID . ':' . ($is_new_post ? 'publish' : 'update');
+        if (isset($this->auto_submitted_posts[$submission_guard_key])) {
             return;
         }
 
@@ -461,18 +668,10 @@ if (!class_exists('RUI_WordPress_Plugin')) {
         $post_submit_on_publish = '1' === get_post_meta($post->ID, '_rui_submit_on_publish', true);
         $post_submit_on_update = '1' === get_post_meta($post->ID, '_rui_submit_on_update', true);
 
-        $category_submit_on_publish = false;
-        $category_submit_on_update = false;
-        foreach (get_the_category($post->ID) as $category) {
-            if (get_term_meta($category->term_id, '_rui_submit_on_publish', true)) {
-                $category_submit_on_publish = true;
-            }
-            if (get_term_meta($category->term_id, '_rui_submit_on_update', true)) {
-                $category_submit_on_update = true;
-            }
-        }
+        $term_auto_submit_settings = $this->get_assigned_term_auto_submit_settings($post->ID, $post->post_type);
+        $category_submit_on_publish = $term_auto_submit_settings['submit_on_publish'];
+        $category_submit_on_update = $term_auto_submit_settings['submit_on_update'];
 
-        $is_new_post = 'publish' !== $old_status;
         if ($is_new_post) {
             $should_submit = $always_submit || $submit_on_publish || $category_submit_on_publish || $post_submit_on_publish;
         } else {
@@ -488,6 +687,7 @@ if (!class_exists('RUI_WordPress_Plugin')) {
             return;
         }
 
+        $this->auto_submitted_posts[$submission_guard_key] = true;
         $domain = preg_replace('#^https?://#', '', get_site_url());
         $project_name = $domain . '-' . $post->post_name;
         $apex_mode_enabled = $this->is_apex_mode_enabled();
@@ -602,18 +802,9 @@ if (!class_exists('RUI_WordPress_Plugin')) {
     public function render_post_settings_meta_box($post) {
         $submit_on_publish = get_post_meta($post->ID, '_rui_submit_on_publish', true);
         $submit_on_update = get_post_meta($post->ID, '_rui_submit_on_update', true);
-        $category_submit_on_publish = false;
-        $category_submit_on_update = false;
-
-        $categories = get_the_category($post->ID);
-        foreach ($categories as $category) {
-            if (get_term_meta($category->term_id, '_rui_submit_on_publish', true)) {
-                $category_submit_on_publish = true;
-            }
-            if (get_term_meta($category->term_id, '_rui_submit_on_update', true)) {
-                $category_submit_on_update = true;
-            }
-        }
+        $term_auto_submit_settings = $this->get_assigned_term_auto_submit_settings($post->ID, $post->post_type);
+        $category_submit_on_publish = $term_auto_submit_settings['submit_on_publish'];
+        $category_submit_on_update = $term_auto_submit_settings['submit_on_update'];
 
         include 'templates/post-settings.php';
     }
@@ -797,7 +988,7 @@ if (!class_exists('RUI_WordPress_Plugin')) {
     }
 
     private function add_post_type_settings() {
-        $post_types = get_post_types(array('public' => true), 'objects');
+        $post_types = $this->get_auto_submit_post_types('objects');
         foreach ($post_types as $post_type) {
             add_settings_field(
                 'rui_submit_on_publish_' . $post_type->name,
@@ -826,6 +1017,10 @@ if (!class_exists('RUI_WordPress_Plugin')) {
     }
 
     public function sanitize_settings($input) {
+        if (!is_array($input)) {
+            $input = array();
+        }
+
         $sanitized_input = array();
         
         if (isset($input['api_key'])) {
@@ -838,7 +1033,24 @@ if (!class_exists('RUI_WordPress_Plugin')) {
 
         $sanitized_input['apex_mode_enabled'] = isset($input['apex_mode_enabled']) ? 1 : 0;
         
-        $post_types = get_post_types(array('public' => true), 'names');
+        $existing_settings = get_option('rui_settings', array());
+        if (!is_array($existing_settings)) {
+            $existing_settings = array();
+        }
+
+        foreach ($existing_settings as $key => $value) {
+            if (preg_match('/^submit_on_(publish|update)_[A-Za-z0-9_-]+$/', $key)) {
+                $sanitized_input[$key] = (int) !empty($value);
+            }
+        }
+
+        foreach ($input as $key => $value) {
+            if (preg_match('/^submit_on_(publish|update)_[A-Za-z0-9_-]+$/', $key)) {
+                $sanitized_input[$key] = (int) !empty($value);
+            }
+        }
+
+        $post_types = $this->get_auto_submit_post_types('names');
         foreach ($post_types as $post_type) {
             $sanitized_input['submit_on_publish_' . $post_type] = isset($input['submit_on_publish_' . $post_type]) ? 1 : 0;
             $sanitized_input['submit_on_update_' . $post_type] = isset($input['submit_on_update_' . $post_type]) ? 1 : 0;
@@ -883,7 +1095,7 @@ if (!class_exists('RUI_WordPress_Plugin')) {
 
     public function submit_on_publish_callback() {
         $settings = get_option('rui_settings', array());
-        $post_types = get_post_types(array('public' => true), 'objects');
+        $post_types = $this->get_auto_submit_post_types('objects');
         echo '<fieldset>';
         foreach ($post_types as $post_type) {
             $option_name = "submit_on_publish_{$post_type->name}";
@@ -912,7 +1124,7 @@ if (!class_exists('RUI_WordPress_Plugin')) {
 
     public function submit_on_update_callback() {
         $settings = get_option('rui_settings', array());
-        $post_types = get_post_types(array('public' => true), 'objects');
+        $post_types = $this->get_auto_submit_post_types('objects');
         echo '<fieldset>';
         foreach ($post_types as $post_type) {
             $option_name = "submit_on_update_{$post_type->name}";
@@ -954,7 +1166,7 @@ if (!class_exists('RUI_WordPress_Plugin')) {
     public function post_types_callback() {
         $settings = get_option('rui_settings');
         $selected_post_types = isset($settings['post_types']) ? $settings['post_types'] : array();
-        $post_types = get_post_types(array('public' => true), 'objects');
+        $post_types = $this->get_auto_submit_post_types('objects');
 
         echo '<select name="rui_settings[post_types][]" multiple="multiple" style="height: 100px;">';
         foreach ($post_types as $post_type) {
