@@ -7,7 +7,7 @@ if (!defined('ABSPATH')) {
 /**
  * Plugin Name: Rapid URL Indexer for WP
  * Description: Submit URLs to Rapid URL Indexer for fast and reliable Google indexing. Uses the Rapid URL Indexer API service.
- * Version: 1.1.8
+ * Version: 1.1.9
  * Requires at least: 4.7
  * Tested up to: 7.0
  * Requires PHP: 7.4
@@ -28,7 +28,7 @@ if (!defined('ABSPATH')) {
 }
 
 if (!defined('RUI_PLUGIN_VERSION')) {
-    define('RUI_PLUGIN_VERSION', '1.1.8');
+    define('RUI_PLUGIN_VERSION', '1.1.9');
 }
 
 if (!class_exists('RUI_WordPress_Plugin')) {
@@ -1021,10 +1021,17 @@ if (!class_exists('RUI_WordPress_Plugin')) {
             $input = array();
         }
 
+        $existing_settings = get_option('rui_settings', array());
+        if (!is_array($existing_settings)) {
+            $existing_settings = array();
+        }
+
         $sanitized_input = array();
-        
-        if (isset($input['api_key'])) {
-            $sanitized_input['api_key'] = sanitize_text_field($input['api_key']);
+        $api_key = isset($input['api_key']) ? sanitize_text_field($input['api_key']) : '';
+        if ('' !== $api_key) {
+            $sanitized_input['api_key'] = $api_key;
+        } elseif (isset($existing_settings['api_key'])) {
+            $sanitized_input['api_key'] = $existing_settings['api_key'];
         }
         
         if (isset($input['email_status_updates'])) {
@@ -1033,11 +1040,6 @@ if (!class_exists('RUI_WordPress_Plugin')) {
 
         $sanitized_input['apex_mode_enabled'] = isset($input['apex_mode_enabled']) ? 1 : 0;
         
-        $existing_settings = get_option('rui_settings', array());
-        if (!is_array($existing_settings)) {
-            $existing_settings = array();
-        }
-
         foreach ($existing_settings as $key => $value) {
             if (preg_match('/^submit_on_(publish|update)_[A-Za-z0-9_-]+$/', $key)) {
                 $sanitized_input[$key] = (int) !empty($value);
@@ -1203,10 +1205,10 @@ if (!class_exists('RUI_WordPress_Plugin')) {
     }
 
     public function api_key_callback() {
-        $settings = get_option('rui_settings');
-        $api_key = isset($settings['api_key']) ? $settings['api_key'] : '';
-        echo "<input type='text' name='rui_settings[api_key]' value='" . esc_attr($api_key) . "' />";
-        echo "<p class='description'>" . wp_kses(__('To find your API key, scroll down on your <a href="https://rapidurlindexer.com/my-account/rui-projects/" target="_blank">My Projects</a> page.', 'rapidurlindexer-wp'), array('a' => array('href' => array(), 'target' => array()))) . "</p>";
+        $settings = get_option('rui_settings', array());
+        $placeholder = !empty($settings['api_key']) ? __('API key saved. Leave blank to keep it unchanged.', 'rapidurlindexer-wp') : '';
+        echo "<input type='password' name='rui_settings[api_key]' value='' autocomplete='new-password' placeholder='" . esc_attr($placeholder) . "' />";
+        echo "<p class='description'>" . wp_kses(__('To find your API key, scroll down on your <a href="https://rapidurlindexer.com/my-account/rui-projects/" target="_blank">My Projects</a> page. Saved API keys are hidden; enter a new key only when replacing it.', 'rapidurlindexer-wp'), array('a' => array('href' => array(), 'target' => array()))) . "</p>";
     }
 
     public function email_status_updates_callback() {

@@ -3,7 +3,7 @@ Contributors: rapidurlindexer
 Tags: indexer, index, google, website indexer, seo
 Requires at least: 4.7
 Tested up to: 7.0
-Stable tag: 1.1.8
+Stable tag: 1.1.9
 Requires PHP: 7.4
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.en.html
@@ -111,6 +111,9 @@ Yes, Rapid URL Indexer provides a RESTful API for easy integration with your own
 This plugin sends the URLs of your posts and pages to the Rapid URL Indexer service for indexing. No personal data is sent other than the URLs themselves. Please review the Rapid URL Indexer Privacy Policy for more information on how they handle data.
 
 == Changelog ==
+
+= 1.1.9 =
+* security: Hide saved API keys in the settings screen while preserving existing keys on blank saves.
 
 = 1.1.8 =
 * fix: Submit enabled custom post types and their custom taxonomy terms on publish and update.
